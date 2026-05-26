@@ -4371,6 +4371,7 @@ class ToolService(BaseService):
         # ═══════════════════════════════════════════════════════════════════════════
         # First-Party
         from mcpgateway.transports.context import request_headers_var  # pylint: disable=import-outside-toplevel
+
         if request_headers:
             request_headers_var.set(request_headers)
         # ═══════════════════════════════════════════════════════════════════════════
