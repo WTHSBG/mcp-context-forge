@@ -5294,9 +5294,9 @@ container-build:
 		echo "🔐 Building container WITH FedRAMP/FIPS compliance (UBI 9 stack)..."; \
 		FIPS_ARG="--build-arg ENABLE_FIPS=true \
 			--build-arg PYTHON_VERSION=3.11 \
-			--build-arg UBI_BASE=registry.access.redhat.com/ubi9/ubi:latest \
-			--build-arg NODEJS_IMAGE=registry.access.redhat.com/ubi9/nodejs-20:latest \
-			--build-arg UBI_MINIMAL=registry.access.redhat.com/ubi9/ubi-minimal:latest"; \
+			--build-arg UBI_BASE=registry.access.redhat.com/ubi9/ubi@sha256:c342e86b66854269554d8ac8e53e6e34d540c2289b06e19897037cb219c5ec59 \
+			--build-arg NODEJS_IMAGE=registry.access.redhat.com/ubi9/nodejs-20@sha256:e395d430f6534e9f8df4519cbbf11fe5a3ac8f2c1209c821bf7b05520dd7c7ce \
+			--build-arg UBI_MINIMAL=registry.access.redhat.com/ubi9/ubi-minimal@sha256:6ea809bdd8164f8b2b607e38f01b14c374a15bdfbc74fcd0155161512dd4e00e"; \
 	else \
 		FIPS_ARG="--build-arg ENABLE_FIPS=false"; \
 	fi; \
