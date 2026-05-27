@@ -2662,8 +2662,6 @@ class Settings(BaseSettings):
     otel_bsp_schedule_delay: int = Field(default=5000, description="Schedule delay in milliseconds")
 
     # ===================================
-
-    # ===================================
     # OpenTelemetry Baggage Configuration
     # ===================================
 
@@ -2702,6 +2700,14 @@ class Settings(BaseSettings):
     otel_baggage_log_sanitization: bool = Field(
         default=True,
         description="Log sanitization events for compliance tracking",
+    )
+
+    # ===================================
+    # Experimental dataplane config
+    # ===================================
+
+    dataplane_publisher: bool = Field(default=False,
+        description="Send data from CF to Rust experimental dataplane"
     )
 
     # Well-Known URI Configuration
