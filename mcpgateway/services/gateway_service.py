@@ -113,6 +113,7 @@ from mcpgateway.utils.passthrough_headers import get_passthrough_headers
 from mcpgateway.utils.redis_client import get_redis_client
 from mcpgateway.utils.retry_manager import ResilientHttpClient
 from mcpgateway.utils.services_auth import decode_auth, encode_auth
+from mcpgateway.utils.credential_pool import auth_headers_variants, select_auth_headers, should_rotate_credential_on_error
 from mcpgateway.utils.sqlalchemy_modifier import json_contains_tag_expr
 from mcpgateway.utils.ssl_context_cache import get_cached_ssl_context
 from mcpgateway.utils.url_auth import apply_query_param_auth, sanitize_exception_message, sanitize_url_for_logging
@@ -1090,6 +1091,9 @@ class GatewayService(BaseService):  # pylint: disable=too-many-instance-attribut
                 auth_value = header_dict  # store plain dict, consistent with update path and DB column type
                 authentication_headers = {str(k): str(v) for k, v in header_dict.items()}
 
+            elif isinstance(auth_value, dict):
+                authentication_headers, _ = select_auth_headers(auth_value, f"gateway:{slug_name}")
+
             elif isinstance(auth_value, str) and auth_value:
                 # Decode persisted auth for initialization
                 decoded = decode_auth(auth_value)
@@ -1110,12 +1114,33 @@ class GatewayService(BaseService):  # pylint: disable=too-many-instance-attribut
             if gateway_mode == "direct_proxy" and not settings.mcpgateway_direct_proxy_enabled:
                 raise GatewayError("direct_proxy gateway mode is disabled. Set MCPGATEWAY_DIRECT_PROXY_ENABLED=true to enable.")
 
-            if initialize_timeout is not None:
+            auth_variants = list(auth_headers_variants(decoded_auth_value)) if decoded_auth_value else [(authentication_headers or {}, None)]
+            last_init_error: Optional[BaseException] = None
+            for attempt_headers, slot_id in auth_variants:
                 try:
-                    capabilities, tools, resources, prompts, validation_errors = await asyncio.wait_for(
-                        self._initialize_gateway(
+                    if initialize_timeout is not None:
+                        try:
+                            capabilities, tools, resources, prompts, validation_errors = await asyncio.wait_for(
+                                self._initialize_gateway(
+                                    init_url,  # URL with query params if applicable
+                                    attempt_headers,
+                                    gateway.transport,
+                                    auth_type,
+                                    oauth_config,
+                                    ca_certificate,
+                                    auth_query_params=auth_query_params_decrypted,
+                                    client_cert=init_client_cert,
+                                    client_key=init_client_key,
+                                ),
+                                timeout=initialize_timeout,
+                            )
+                        except asyncio.TimeoutError as exc:
+                            sanitized = sanitize_url_for_logging(init_url, auth_query_params_decrypted)
+                            raise GatewayConnectionError(f"Gateway initialization timed out after {initialize_timeout}s for {sanitized}") from exc
+                    else:
+                        capabilities, tools, resources, prompts, validation_errors = await self._initialize_gateway(
                             init_url,  # URL with query params if applicable
-                            authentication_headers,
+                            attempt_headers,
                             gateway.transport,
                             auth_type,
                             oauth_config,
@@ -1123,24 +1148,18 @@ class GatewayService(BaseService):  # pylint: disable=too-many-instance-attribut
                             auth_query_params=auth_query_params_decrypted,
                             client_cert=init_client_cert,
                             client_key=init_client_key,
-                        ),
-                        timeout=initialize_timeout,
-                    )
-                except asyncio.TimeoutError as exc:
-                    sanitized = sanitize_url_for_logging(init_url, auth_query_params_decrypted)
-                    raise GatewayConnectionError(f"Gateway initialization timed out after {initialize_timeout}s for {sanitized}") from exc
+                        )
+                    break
+                except BaseException as exc:
+                    last_init_error = exc
+                    if slot_id and should_rotate_credential_on_error(exc):
+                        logger.info("Gateway initialization retrying with next credential slot for %s", SecurityValidator.sanitize_log_message(gateway.name))
+                        continue
+                    raise
             else:
-                capabilities, tools, resources, prompts, validation_errors = await self._initialize_gateway(
-                    init_url,  # URL with query params if applicable
-                    authentication_headers,
-                    gateway.transport,
-                    auth_type,
-                    oauth_config,
-                    ca_certificate,
-                    auth_query_params=auth_query_params_decrypted,
-                    client_cert=init_client_cert,
-                    client_key=init_client_key,
-                )
+                if last_init_error:
+                    raise last_init_error
+                raise GatewayConnectionError("Gateway initialization failed: no authentication variants available")
 
             if gateway.one_time_auth:
                 # For one-time auth, clear auth_type and auth_value after initialization
@@ -3865,9 +3884,10 @@ class GatewayService(BaseService):  # pylint: disable=too-many-instance-attribut
                         # Handle non-OAuth authentication (existing logic)
                         auth_data = gateway_auth_value or {}
                         if isinstance(auth_data, str):
-                            headers = decode_auth(auth_data)
+                            decoded_auth = decode_auth(auth_data)
+                            headers, _ = select_auth_headers(decoded_auth, f"gateway:{gateway_id}")
                         elif isinstance(auth_data, dict):
-                            headers = {str(k): str(v) for k, v in auth_data.items()}
+                            headers, _ = select_auth_headers(auth_data, f"gateway:{gateway_id}")
                         else:
                             headers = {}
 
@@ -4210,6 +4230,8 @@ class GatewayService(BaseService):  # pylint: disable=too-many-instance-attribut
             validation_errors: list[str] = []
             if auth_type in ("basic", "bearer", "authheaders") and isinstance(authentication, str):
                 authentication = decode_auth(authentication)
+            if auth_type in ("basic", "bearer", "authheaders") and isinstance(authentication, dict):
+                authentication, _ = select_auth_headers(authentication, f"gateway-url:{url}")
             if transport.lower() == "sse":
                 capabilities, tools, resources, prompts, validation_errors = await self.connect_to_sse_server(
                     url, authentication, ca_certificate, include_prompts, include_resources, auth_query_params, client_cert=client_cert, client_key=client_key

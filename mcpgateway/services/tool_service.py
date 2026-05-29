@@ -93,6 +93,13 @@ from mcpgateway.transports.context import UserContext
 from mcpgateway.utils.admin_check import is_admin_bypass_granted, is_user_admin
 from mcpgateway.utils.correlation_id import get_correlation_id
 from mcpgateway.utils.create_slug import slugify
+from mcpgateway.utils.credential_pool import (
+    auth_headers_variants,
+    credential_pool_state,
+    extract_credential_slots,
+    select_auth_headers,
+    should_rotate_credential_on_error,
+)
 from mcpgateway.utils.display_name import generate_display_name
 from mcpgateway.utils.gateway_access import build_gateway_auth_headers, check_gateway_access, extract_gateway_id_from_headers
 from mcpgateway.utils.identity_propagation import build_identity_headers, build_identity_meta
@@ -3575,6 +3582,13 @@ class ToolService(BaseService):
 
             # Prepare headers with gateway auth
             headers = build_gateway_auth_headers(gateway)
+            auth_variants: list[tuple[Dict[str, str], Optional[str]]] = []
+            if gateway.auth_type in {"basic", "bearer", "authheaders"} and gateway.auth_value:
+                raw_auth_value = gateway.auth_value
+                decoded_auth_value = decode_auth(raw_auth_value) if isinstance(raw_auth_value, str) else raw_auth_value
+                auth_variants = list(auth_headers_variants(decoded_auth_value))
+                if auth_variants:
+                    headers = auth_variants[0][0]
 
             # Forward passthrough headers if configured
             if gateway.passthrough_headers and request_headers:
@@ -3589,6 +3603,7 @@ class ToolService(BaseService):
                 meta_data = build_identity_meta(user_context, meta_data, gateway)
 
             gateway_url = gateway.url
+            gateway_pool_key = f"gateway:{gateway.id}"
 
             # Resolve the original (unprefixed) tool name for the remote server.
             # Tools registered via gateways are stored as "{gateway_slug}{separator}{slugified_name}",
@@ -3609,55 +3624,82 @@ class ToolService(BaseService):
 
         # Use MCP SDK to connect and call tool
         try:
-            with create_span(
-                "mcp.client.call",
-                {
-                    "mcp.tool.name": remote_name,
-                    "contextforge.gateway_id": str(gateway.id),
-                    "contextforge.runtime": "python",
-                    "contextforge.transport": "streamablehttp",
-                    "network.protocol.name": "mcp",
-                    "server.address": urlparse(gateway_url).hostname,
-                    "server.port": urlparse(gateway_url).port,
-                    "url.path": urlparse(gateway_url).path or "/",
-                    "url.full": sanitize_url_for_logging(gateway_url, {}),
-                },
-            ):
-                traced_headers = inject_trace_context_headers(headers)
-                async with streamablehttp_client(url=gateway_url, headers=traced_headers, timeout=settings.mcpgateway_direct_proxy_timeout) as (read_stream, write_stream, _get_session_id):
-                    async with ClientSession(read_stream, write_stream) as session:
-                        with create_span("mcp.client.initialize", {"contextforge.transport": "streamablehttp", "contextforge.runtime": "python"}):
-                            await session.initialize()
-
-                        with create_span(
-                            "mcp.client.request",
-                            {
-                                "mcp.tool.name": remote_name,
-                                "contextforge.gateway_id": str(gateway.id),
-                                "contextforge.runtime": "python",
-                            },
+            variants = auth_variants or [(headers, None)]
+            last_error: Optional[Exception] = None
+            for attempt_headers, slot_id in variants:
+                current_headers = dict(headers)
+                auth_header_names = {str(name).lower() for name in attempt_headers}
+                current_headers = {hk: hv for hk, hv in current_headers.items() if str(hk).lower() not in auth_header_names}
+                current_headers.update(attempt_headers)
+                try:
+                    with create_span(
+                        "mcp.client.call",
+                        {
+                            "mcp.tool.name": remote_name,
+                            "contextforge.gateway_id": str(gateway.id),
+                            "contextforge.runtime": "python",
+                            "contextforge.transport": "streamablehttp",
+                            "network.protocol.name": "mcp",
+                            "server.address": urlparse(gateway_url).hostname,
+                            "server.port": urlparse(gateway_url).port,
+                            "url.path": urlparse(gateway_url).path or "/",
+                            "url.full": sanitize_url_for_logging(gateway_url, {}),
+                        },
+                    ):
+                        traced_headers = inject_trace_context_headers(current_headers)
+                        async with streamablehttp_client(url=gateway_url, headers=traced_headers, timeout=settings.mcpgateway_direct_proxy_timeout) as (
+                            read_stream,
+                            write_stream,
+                            _get_session_id,
                         ):
-                            # Call tool with meta if provided
-                            if meta_data:
-                                logger.debug(f"Forwarding _meta to remote gateway: {meta_data}")
-                                tool_result = await session.call_tool(name=remote_name, arguments=arguments, meta=meta_data)
-                            else:
-                                tool_result = await session.call_tool(name=remote_name, arguments=arguments)
-                        with create_span(
-                            "mcp.client.response",
-                            {
-                                "mcp.tool.name": remote_name,
-                                "contextforge.gateway_id": str(gateway.id),
-                                "contextforge.runtime": "python",
-                                "upstream.response.success": not getattr(tool_result, "is_error", False) and not getattr(tool_result, "isError", False),
-                            },
-                        ):
-                            pass
+                            async with ClientSession(read_stream, write_stream) as session:
+                                with create_span("mcp.client.initialize", {"contextforge.transport": "streamablehttp", "contextforge.runtime": "python"}):
+                                    await session.initialize()
 
-                        logger.info(
-                            f"[INVOKE TOOL] Using direct_proxy mode for gateway {SecurityValidator.sanitize_log_message(gateway.id)} (from X-Context-Forge-Gateway-Id header). Meta Attached: {meta_data is not None}"
-                        )
-                        return tool_result
+                                with create_span(
+                                    "mcp.client.request",
+                                    {
+                                        "mcp.tool.name": remote_name,
+                                        "contextforge.gateway_id": str(gateway.id),
+                                        "contextforge.runtime": "python",
+                                    },
+                                ):
+                                    # Call tool with meta if provided
+                                    if meta_data:
+                                        logger.debug(f"Forwarding _meta to remote gateway: {meta_data}")
+                                        tool_result = await session.call_tool(name=remote_name, arguments=arguments, meta=meta_data)
+                                    else:
+                                        tool_result = await session.call_tool(name=remote_name, arguments=arguments)
+                                with create_span(
+                                    "mcp.client.response",
+                                    {
+                                        "mcp.tool.name": remote_name,
+                                        "contextforge.gateway_id": str(gateway.id),
+                                        "contextforge.runtime": "python",
+                                        "upstream.response.success": not getattr(tool_result, "is_error", False) and not getattr(tool_result, "isError", False),
+                                    },
+                                ):
+                                    pass
+
+                                if slot_id and getattr(tool_result, "isError", False) and should_rotate_credential_on_error(tool_result):
+                                    credential_pool_state.mark_unavailable(gateway_pool_key, slot_id)
+                                    logger.info("Direct proxy retrying with next credential slot for gateway %s", gateway.id)
+                                    continue
+
+                                logger.info(
+                                    f"[INVOKE TOOL] Using direct_proxy mode for gateway {SecurityValidator.sanitize_log_message(gateway.id)} (from X-Context-Forge-Gateway-Id header). Meta Attached: {meta_data is not None}"
+                                )
+                                return tool_result
+                except Exception as exc:
+                    last_error = exc
+                    if slot_id and should_rotate_credential_on_error(exc):
+                        credential_pool_state.mark_unavailable(gateway_pool_key, slot_id)
+                        logger.info("Direct proxy retrying after credential-slot failure for gateway %s", gateway.id)
+                        continue
+                    raise
+            if last_error:
+                raise last_error
+            raise ToolInvocationError("Direct proxy tool invocation failed: no credential variants available")
         except Exception as e:
             logger.exception(f"Direct proxy tool invocation failed for {name}: {e}")
             raise ToolInvocationError(f"Direct proxy tool invocation failed: {str(e)}")
@@ -5114,6 +5156,9 @@ class ToolService(BaseService):
 
                     # Handle OAuth authentication for the gateway (using local variables)
                     # NOTE: Use has_gateway instead of gateway to avoid accessing detached ORM object
+                    credential_slot_id = None
+                    credential_pool_slots = []
+                    credential_header_names: set[str] = set()
                     if has_gateway and gateway_auth_type == "oauth" and isinstance(gateway_oauth_config, dict) and gateway_oauth_config:
                         grant_type = gateway_oauth_config.get("grant_type", "client_credentials")
 
@@ -5161,7 +5206,11 @@ class ToolService(BaseService):
                                 logger.error(f"Failed to obtain OAuth access token for gateway {gateway_name}: {e}")
                                 raise ToolInvocationError(f"OAuth authentication failed for gateway: {str(e)}")
                     else:
-                        headers = decode_auth(gateway_auth_value) if gateway_auth_value else {}
+                        decoded_gateway_auth = decode_auth(gateway_auth_value) if gateway_auth_value else {}
+                        credential_pool_key = f"gateway:{gateway_id_str or gateway_url or gateway_name or 'unknown'}"
+                        headers, credential_slot_id = select_auth_headers(decoded_gateway_auth, credential_pool_key)
+                        credential_pool_slots = extract_credential_slots(decoded_gateway_auth)
+                        credential_header_names = {str(header_name).lower() for header_name in headers}
 
                     # Use cached passthrough headers (no DB query needed)
                     if request_headers:
@@ -5710,10 +5759,39 @@ class ToolService(BaseService):
 
                     with create_child_span("tool.gateway_call", {"tool.name": name, "tool.id": tool_id, "tool.integration_type": "MCP"}):
                         tool_call_result = ToolResult(content=[TextContent(text="", type="text")])
-                        if transport == "sse":
-                            tool_call_result = await connect_to_sse_server(gateway_url, headers=headers)
-                        elif transport == "streamablehttp":
-                            tool_call_result = await connect_to_streamablehttp_server(gateway_url, headers=headers)
+                        max_credential_attempts = max(1, len(credential_pool_slots))
+                        credential_attempt = 0
+                        while True:
+                            credential_attempt += 1
+                            try:
+                                if transport == "sse":
+                                    tool_call_result = await connect_to_sse_server(gateway_url, headers=headers)
+                                elif transport == "streamablehttp":
+                                    tool_call_result = await connect_to_streamablehttp_server(gateway_url, headers=headers)
+                                if (
+                                    credential_slot_id
+                                    and credential_attempt < max_credential_attempts
+                                    and getattr(tool_call_result, "is_error", False)
+                                    and should_rotate_credential_on_error(tool_call_result)
+                                ):
+                                    credential_pool_state.mark_unavailable(credential_pool_key, credential_slot_id)
+                                    next_headers, credential_slot_id = select_auth_headers(decoded_gateway_auth, credential_pool_key)
+                                    headers = {hk: hv for hk, hv in headers.items() if str(hk).lower() not in credential_header_names}
+                                    headers.update(next_headers)
+                                    credential_header_names = {str(header_name).lower() for header_name in next_headers}
+                                    logger.info("Retrying MCP tool call with next credential slot for gateway %s", gateway_id_str or gateway_name)
+                                    continue
+                                break
+                            except Exception as credential_error:
+                                if credential_slot_id and credential_attempt < max_credential_attempts and should_rotate_credential_on_error(credential_error):
+                                    credential_pool_state.mark_unavailable(credential_pool_key, credential_slot_id)
+                                    next_headers, credential_slot_id = select_auth_headers(decoded_gateway_auth, credential_pool_key)
+                                    headers = {hk: hv for hk, hv in headers.items() if str(hk).lower() not in credential_header_names}
+                                    headers.update(next_headers)
+                                    credential_header_names = {str(header_name).lower() for header_name in next_headers}
+                                    logger.info("Retrying MCP tool call after credential-slot failure for gateway %s", gateway_id_str or gateway_name)
+                                    continue
+                                raise
 
                         # In direct proxy mode, preserve the upstream response verbatim
                         # (no jsonpath filtering, no structured/unstructured split) but

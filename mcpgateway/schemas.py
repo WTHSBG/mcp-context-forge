@@ -42,6 +42,7 @@ from mcpgateway.common.oauth import OAUTH_SENSITIVE_KEYS
 from mcpgateway.common.validators import SecurityValidator, validate_core_url
 from mcpgateway.config import settings
 from mcpgateway.utils.base_models import BaseModelWithConfigDict
+from mcpgateway.utils.credential_pool import is_credential_pool
 from mcpgateway.utils.services_auth import decode_auth, encode_auth
 from mcpgateway.validation.tags import validate_tags_field
 
@@ -2863,7 +2864,7 @@ class GatewayCreate(BaseModelWithConfigDict):
     )
 
     # Adding `auth_value` as an alias for better access post-validation
-    auth_value: Optional[str] = Field(None, validate_default=True)
+    auth_value: Optional[Union[str, Dict[str, Any]]] = Field(None, validate_default=True)
 
     # One time auth - do not store the auth in gateway flag
     one_time_auth: Optional[bool] = Field(default=False, description="The authentication should be used only once and not stored in the gateway")
@@ -3005,6 +3006,8 @@ class GatewayCreate(BaseModelWithConfigDict):
 
         if (auth_type is None) or (auth_type == ""):
             return v  # If no auth_type is provided, no need to create auth_value
+        if isinstance(v, dict):
+            return v
 
         # Process the auth fields and generate auth_value based on auth_type
         auth_value = cls._process_auth_fields(info)
@@ -3203,7 +3206,7 @@ class GatewayUpdate(BaseModelWithConfigDict):
     auth_headers: Optional[List[Dict[str, str]]] = Field(None, description="List of custom headers for authentication")
 
     # Adding `auth_value` as an alias for better access post-validation
-    auth_value: Optional[str] = Field(None, validate_default=True)
+    auth_value: Optional[Union[str, Dict[str, Any]]] = Field(None, validate_default=True)
 
     # OAuth 2.0 configuration
     oauth_config: Optional[Dict[str, Any]] = Field(None, description="OAuth 2.0 configuration including grant_type, client_id, encrypted client_secret, URLs, and scopes")
@@ -3346,6 +3349,8 @@ class GatewayUpdate(BaseModelWithConfigDict):
 
         if (auth_type is None) or (auth_type == ""):
             return v  # If no auth_type is provided, no need to create auth_value
+        if isinstance(v, dict):
+            return v
 
         # Process the auth fields and generate auth_value based on auth_type
         auth_value = cls._process_auth_fields(info)
@@ -3554,7 +3559,7 @@ class GatewayRead(BaseModelWithConfigDict):
     client_key: Optional[str] = Field(default=None, description="Client TLS key for mTLS authentication")
     # Authorizations
     auth_type: Optional[str] = Field(None, description="auth_type: basic, bearer, authheaders, oauth, query_param, or None")
-    auth_value: Optional[str] = Field(None, description="auth value: username/password or token or custom headers")
+    auth_value: Optional[Union[str, Dict[str, Any]]] = Field(None, description="auth value: username/password, token, custom headers, or credential pool")
     auth_headers: Optional[List[Dict[str, str]]] = Field(default=None, description="List of custom headers for authentication")
     auth_headers_unmasked: Optional[List[Dict[str, str]]] = Field(default=None, description="Unmasked custom headers for administrative views")
 
@@ -3753,7 +3758,15 @@ class GatewayRead(BaseModelWithConfigDict):
         if not auth_value_encoded:
             return self
 
-        auth_value = decode_auth(auth_value_encoded)
+        auth_value = auth_value_encoded if isinstance(auth_value_encoded, dict) else decode_auth(auth_value_encoded)
+        if is_credential_pool(auth_value):
+            pool_items = auth_value.get("credential_pool") or []
+            self.auth_headers = [{"key": "credential_pool", "value": f"{len(pool_items)} credential(s)"}]
+            self.auth_headers_unmasked = self.auth_headers
+            self.auth_header_key = "credential_pool"
+            self.auth_header_value = settings.masked_auth_value
+            self.auth_header_value_unmasked = settings.masked_auth_value
+            return self
         if auth_type == "basic":
             auth = auth_value.get("Authorization")
             if not (isinstance(auth, str) and auth.startswith("Basic ")):

@@ -7,6 +7,8 @@
 .ica.env
 .htpasswd
 token.txt
+testmcp*.txt
+*mcp-key*.txt
 
 # ========================================
 # Virtual Environments

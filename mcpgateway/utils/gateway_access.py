@@ -19,6 +19,7 @@ from sqlalchemy.orm import Session
 # First-Party
 from mcpgateway.db import Gateway as DbGateway
 from mcpgateway.utils.admin_check import is_user_admin
+from mcpgateway.utils.credential_pool import is_credential_pool, select_auth_headers
 from mcpgateway.utils.services_auth import decode_auth
 
 # Header name used by clients to target a specific gateway for direct_proxy mode.
@@ -142,25 +143,28 @@ def build_gateway_auth_headers(gateway: DbGateway) -> Dict[str, str]:
     """
     headers: Dict[str, str] = {}
 
-    if gateway.auth_type == "bearer" and gateway.auth_value:
-        if isinstance(gateway.auth_value, dict):
-            token = gateway.auth_value.get("Authorization", "").replace("Bearer ", "")
+    if gateway.auth_type in {"bearer", "basic", "authheaders"} and gateway.auth_value:
+        auth_value = gateway.auth_value
+        if isinstance(auth_value, str):
+            auth_value = decode_auth(auth_value)
+        if is_credential_pool(auth_value):
+            selected_headers, _ = select_auth_headers(auth_value, f"gateway:{getattr(gateway, 'id', getattr(gateway, 'url', 'unknown'))}")
+            return selected_headers
+    else:
+        auth_value = None
+
+    if gateway.auth_type == "bearer" and auth_value:
+        if isinstance(auth_value, dict):
+            token = auth_value.get("Authorization", "").replace("Bearer ", "")
             if token:  # Only add header if token is not empty
                 headers["Authorization"] = f"Bearer {token}"
-        elif isinstance(gateway.auth_value, str):
-            decoded = decode_auth(gateway.auth_value)
-            token = decoded.get("Authorization", "").replace("Bearer ", "")
-            if token:  # Only add header if token is not empty
-                headers["Authorization"] = f"Bearer {token}"
-    elif gateway.auth_type == "basic" and gateway.auth_value:
-        if isinstance(gateway.auth_value, dict):
-            auth_header = gateway.auth_value.get("Authorization", "")
+    elif gateway.auth_type == "basic" and auth_value:
+        if isinstance(auth_value, dict):
+            auth_header = auth_value.get("Authorization", "")
             if auth_header:  # Only add header if not empty
                 headers["Authorization"] = auth_header
-        elif isinstance(gateway.auth_value, str):
-            decoded = decode_auth(gateway.auth_value)
-            auth_header = decoded.get("Authorization", "")
-            if auth_header:  # Only add header if not empty
-                headers["Authorization"] = auth_header
+    elif gateway.auth_type == "authheaders" and auth_value:
+        if isinstance(auth_value, dict):
+            headers.update({str(k): str(v) for k, v in auth_value.items() if k and v})
 
     return headers
