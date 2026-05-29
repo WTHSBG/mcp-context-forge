@@ -34,6 +34,10 @@ ARG ENABLE_RUST_MCP_RMCP=false
 # Note: Container must have SYS_PTRACE capability for attaching to processes
 # See docs/docs/development/profiling.md for detailed usage
 ARG ENABLE_PROFILING=false
+# Download local CDN vendor assets during build. Keep this enabled for
+# airgapped images; quickstart builds can disable it to avoid flaky CDN/TLS
+# failures while still using the bundled Vite/CSS assets and external CDNs.
+ARG DOWNLOAD_CDN_ASSETS=true
 
 ###############################################################################
 # Rust builder stage - builds Rust MCP runtime and local native extensions
@@ -253,6 +257,7 @@ COPY --chmod=0755 scripts/verify-native-extensions.py /tmp/verify-native-extensi
 ARG ENABLE_RUST=false
 ARG ENABLE_RUST_MCP_RMCP=false
 ARG ENABLE_PROFILING=false
+ARG DOWNLOAD_CDN_ASSETS=true
 RUN set -euo pipefail \
     && . /etc/profile.d/use-openssl.sh \
     && python3 -m venv /app/.venv \
@@ -310,7 +315,11 @@ COPY run.sh /app/
 # --chmod=0755 lets us skip a follow-up chmod layer.
 # ----------------------------------------------------------------------------
 COPY --chmod=0755 scripts/download-cdn-assets.sh /tmp/download-cdn-assets.sh
-RUN /tmp/download-cdn-assets.sh \
+RUN if [ "$DOWNLOAD_CDN_ASSETS" = "true" ]; then \
+        /tmp/download-cdn-assets.sh; \
+    else \
+        echo "⏭️  Skipping CDN asset download (DOWNLOAD_CDN_ASSETS=false)"; \
+    fi \
     && rm /tmp/download-cdn-assets.sh
 
 # ----------------------------------------------------------------------------
@@ -332,6 +341,7 @@ COPY plugins/ /app/plugins/
 # ----------------------------------------------------------------------------
 RUN python3 -OO -m compileall -x 'cpex/templates' -q /app/.venv /app/mcpgateway /app/plugins \
     && find /app -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true \
+    && mkdir -p /app/data \
     && chown -R 10001:10001 /app
 
 ###########################

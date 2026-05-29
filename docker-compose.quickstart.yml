@@ -17,6 +17,7 @@ services:
       args:
         ENABLE_RUST: "false"
         ENABLE_RUST_MCP_RMCP: "false"
+        DOWNLOAD_CDN_ASSETS: "false"
     image: ${IMAGE_LOCAL:-contextforge-credential-pool:local}
     container_name: contextforge-credential-pool
     restart: unless-stopped
@@ -25,9 +26,11 @@ services:
     environment:
       HOST: 0.0.0.0
       PORT: 4444
+      GUNICORN_WORKERS: ${GUNICORN_WORKERS:-1}
+      GUNICORN_PRELOAD_APP: ${GUNICORN_PRELOAD_APP:-false}
       APP_DOMAIN: ${APP_DOMAIN:-http://localhost:4444}
       TRANSPORT_TYPE: ${TRANSPORT_TYPE:-streamablehttp}
-      DATABASE_URL: sqlite:////data/mcp.db
+      DATABASE_URL: sqlite:////app/data/mcp.db
       CACHE_TYPE: ${CACHE_TYPE:-memory}
       AUTH_REQUIRED: ${AUTH_REQUIRED:-true}
       EMAIL_AUTH_ENABLED: ${EMAIL_AUTH_ENABLED:-true}
@@ -45,7 +48,7 @@ services:
       MCPGATEWAY_DIRECT_PROXY_ENABLED: ${MCPGATEWAY_DIRECT_PROXY_ENABLED:-true}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
     volumes:
-      - contextforge_data:/data
+      - contextforge_data:/app/data
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:4444/health"]
       interval: 30s
