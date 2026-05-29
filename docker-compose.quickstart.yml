@@ -28,25 +28,29 @@ services:
       PORT: 4444
       GUNICORN_WORKERS: ${GUNICORN_WORKERS:-1}
       GUNICORN_PRELOAD_APP: ${GUNICORN_PRELOAD_APP:-false}
-      APP_DOMAIN: ${APP_DOMAIN:-http://localhost:4444}
-      TRANSPORT_TYPE: ${TRANSPORT_TYPE:-streamablehttp}
+      APP_DOMAIN: http://localhost:4444
+      TRANSPORT_TYPE: streamablehttp
       DATABASE_URL: sqlite:////app/data/mcp.db
-      CACHE_TYPE: ${CACHE_TYPE:-memory}
-      AUTH_REQUIRED: ${AUTH_REQUIRED:-true}
-      EMAIL_AUTH_ENABLED: ${EMAIL_AUTH_ENABLED:-true}
-      MCP_CLIENT_AUTH_ENABLED: ${MCP_CLIENT_AUTH_ENABLED:-true}
-      PLATFORM_ADMIN_EMAIL: ${PLATFORM_ADMIN_EMAIL:-admin@example.com}
-      PLATFORM_ADMIN_PASSWORD: ${PLATFORM_ADMIN_PASSWORD:-ChangeMe123!}
-      PLATFORM_ADMIN_FULL_NAME: ${PLATFORM_ADMIN_FULL_NAME:-Platform Administrator}
-      JWT_SECRET_KEY: ${JWT_SECRET_KEY:-change-this-local-dev-secret-at-least-32-bytes}
-      JWT_AUDIENCE: ${JWT_AUDIENCE:-mcpgateway-api}
-      JWT_ISSUER: ${JWT_ISSUER:-mcpgateway}
-      AUTH_ENCRYPTION_SECRET: ${AUTH_ENCRYPTION_SECRET:-change-this-auth-encryption-secret-32b}
-      REQUIRE_USER_IN_DB: ${REQUIRE_USER_IN_DB:-false}
-      MCPGATEWAY_UI_ENABLED: ${MCPGATEWAY_UI_ENABLED:-true}
-      MCPGATEWAY_ADMIN_API_ENABLED: ${MCPGATEWAY_ADMIN_API_ENABLED:-true}
-      MCPGATEWAY_DIRECT_PROXY_ENABLED: ${MCPGATEWAY_DIRECT_PROXY_ENABLED:-true}
-      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      CACHE_TYPE: memory
+      AUTH_REQUIRED: "true"
+      EMAIL_AUTH_ENABLED: "true"
+      MCP_CLIENT_AUTH_ENABLED: "true"
+      PLATFORM_ADMIN_EMAIL: admin@example.com
+      PLATFORM_ADMIN_PASSWORD: ChangeMe123!
+      PLATFORM_ADMIN_FULL_NAME: Platform Administrator
+      JWT_SECRET_KEY: change-this-local-dev-secret-at-least-32-bytes
+      JWT_AUDIENCE: mcpgateway-api
+      JWT_ISSUER: mcpgateway
+      AUTH_ENCRYPTION_SECRET: change-this-auth-encryption-secret-32b
+      REQUIRE_USER_IN_DB: "false"
+      SECURE_COOKIES: "false"
+      CSRF_COOKIE_SECURE: "false"
+      COOKIE_SAMESITE: lax
+      PASSWORD_CHANGE_ENFORCEMENT_ENABLED: "false"
+      MCPGATEWAY_UI_ENABLED: "true"
+      MCPGATEWAY_ADMIN_API_ENABLED: "true"
+      MCPGATEWAY_DIRECT_PROXY_ENABLED: "true"
+      LOG_LEVEL: INFO
     volumes:
       - contextforge_data:/app/data
     healthcheck:
