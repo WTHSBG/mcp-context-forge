@@ -1,6 +1,6 @@
 <!doctype html>
 <html
-  lang="en"
+  lang="zh-CN"
   x-data="{ darkMode: (() => { try { return JSON.parse(localStorage.getItem('darkMode') || 'false') } catch(e) { window.Admin?.logRestrictedContext?.(e); return false } })() }"
   x-bind:class="darkMode ? 'dark' : ''"
   x-init="$watch('darkMode', val => { try { localStorage.setItem('darkMode', val) } catch(e) { window.Admin?.logRestrictedContext?.(e); } })"
@@ -8,7 +8,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>ContextForge - Gateway Administration</title>
+    <title>ContextForge - 网关管理</title>
 
     <!-- Security headers are set by middleware, not meta tags -->
     <!-- Favicon -->
@@ -239,6 +239,7 @@
 
     <!-- Password Validator (shared utility) -->
     <script src="{{ root_path }}/static/js/password-validator.js" nonce="{{ csp_nonce(request) }}"></script>
+    <script src="{{ root_path }}/static/js/zh-cn-ui.js" nonce="{{ csp_nonce(request) }}"></script>
 
     <!-- CodeMirror -->
     {% if ui_airgapped %}

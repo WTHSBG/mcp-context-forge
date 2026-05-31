@@ -4120,7 +4120,7 @@ async def admin_login_page(request: Request) -> Response:
     # Only show secure cookie warning if there's a login error AND problematic config
     secure_cookie_warning = None
     if settings.secure_cookies and settings.environment == "development":
-        secure_cookie_warning = "Serving over HTTP with secure cookies enabled. If you have login issues, try disabling secure cookies in your configuration."
+        secure_cookie_warning = "当前正在通过 HTTP 提供服务，但启用了安全 Cookie。如果登录异常，请在配置中关闭安全 Cookie。"
 
     # Preserve email from failed login attempt
     prefill_email = request.query_params.get("email", "")
